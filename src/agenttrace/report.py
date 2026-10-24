@@ -230,7 +230,9 @@ def generate_report(
     has_tools = report.tool_call_events > 0
     has_chain = report.chain_valid
     has_human = report.human_review_events > 0 or report.human_oversight_triggered > 0
-    has_risk = report.policy_check_events > 0 or report.high_risk_events >= 0
+    has_risk_scores = any(e.risk_score > 0 for e in events)
+    has_risk = report.policy_check_events > 0 or has_risk_scores
+    has_incident_tracking = report.policy_check_events > 0 or report.deny_decisions > 0
 
     report.eu_ai_act_coverage = {
         "Article 12 — Logging": (
@@ -254,15 +256,17 @@ def generate_report(
             else "PARTIAL — no human oversight events recorded"
         ),
         "Article 9 — Risk management": (
-            "SATISFIED — risk_score and risk_tier recorded per event" if has_risk else "PARTIAL"
+            "SATISFIED — risk_score and risk_tier recorded per event"
+            if has_risk
+            else "PARTIAL — no policy checks or non-zero risk scores recorded"
         ),
     }
 
     report.iso_42001_coverage = {
         "Clause 6.1 — Risk actions": (
             "SATISFIED — risk_score > 0 events annotated"
-            if report.high_risk_events >= 0
-            else "PARTIAL"
+            if has_risk_scores
+            else "PARTIAL — no events with risk_score > 0"
         ),
         "Clause 8.4 — AI system lifecycle": (
             "SATISFIED — session_start and session_end events recorded"
@@ -287,8 +291,8 @@ def generate_report(
         ),
         "MANAGE 2.2 — Incidents": (
             f"SATISFIED — {report.deny_decisions} DENY decisions logged"
-            if report.deny_decisions >= 0
-            else "PARTIAL"
+            if has_incident_tracking
+            else "PARTIAL — no policy checks or DENY decisions recorded"
         ),
         "MEASURE 2.5 — Risk tracking": f"SATISFIED — avg risk score {report.avg_risk_score:.1f}/100",
     }

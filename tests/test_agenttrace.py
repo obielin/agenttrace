@@ -317,3 +317,18 @@ class TestComplianceReport:
         report = generate_report(path)
         assert report.deny_decisions == 2
         assert len(report.deny_event_ids) == 2
+
+    def test_report_risk_clauses_partial_without_evidence(self, tmp_path):
+        tracer = AgentTracer(agent_id="a", output_dir=tmp_path)
+        tracer.start_session()
+        path = tracer.end_session()
+        report = generate_report(path)
+        assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("PARTIAL")
+        assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("PARTIAL")
+        assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("PARTIAL")
+
+    def test_report_risk_clauses_satisfied_with_evidence(self, bundle):
+        report = generate_report(bundle)
+        assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("SATISFIED")
+        assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("SATISFIED")
+        assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("SATISFIED")
