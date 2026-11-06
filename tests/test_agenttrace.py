@@ -233,6 +233,92 @@ class TestAgentTracer:
         assert event.metadata["key"] == "value"
 
 
+# ── trace_tool tests ─────────────────────────
+
+
+class TestTraceTool:
+    @pytest.fixture
+    def tracer(self, tmp_path):
+        return AgentTracer(
+            agent_id="test-agent",
+            framework="custom",
+            output_dir=tmp_path,
+        )
+
+    def test_trace_tool_records_one_tool_call_on_exit(self, tracer):
+        tracer.start_session()
+        with tracer.trace_tool("search", input_text="AI governance") as t:
+            assert t.event is None
+            t.output_hash = hash_text("search results")
+        assert tracer.event_count == 2
+        event = t.event
+        assert event is not None
+        assert event.event_type == EventType.TOOL_CALL
+        assert event.tool_name == "search"
+        assert event.input_hash == hash_text("AI governance")
+        assert event.output_hash == hash_text("search results")
+        assert event.duration_ms >= 0.0
+        assert tracer.events[-1] is event
+
+    def test_trace_tool_output_text_is_hashed(self, tracer):
+        with tracer.trace_tool("search", input_text="q") as t:
+            t.output_text = "answer"
+        assert t.event.output_hash == hash_text("answer")
+
+    def test_trace_tool_exception_still_records_and_propagates(self, tracer):
+        with pytest.raises(ValueError, match="boom"):
+            with tracer.trace_tool("search", input_text="q") as t:
+                raise ValueError("boom")
+        assert t.event is not None
+        assert tracer.event_count == 1
+        assert t.event.event_type == EventType.ERROR
+        assert t.event.tool_name == "search"
+        assert t.event.input_hash == hash_text("q")
+        assert t.event.policy_decision == PolicyDecision.DENY
+        assert t.event.metadata["error"] == "ValueError"
+        assert t.event.duration_ms >= 0.0
+
+    def test_trace_tool_error_event_keeps_partial_output(self, tracer):
+        with pytest.raises(ValueError, match="boom"):
+            with tracer.trace_tool(
+                "search", input_text="q", model="gpt-4o", risk_score=10.0
+            ) as t:
+                t.output_hash = hash_text("partial result")
+                raise ValueError("boom")
+        assert t.event is not None
+        assert t.event.event_type == EventType.ERROR
+        assert t.event.tool_name == "search"
+        assert t.event.input_hash == hash_text("q")
+        assert t.event.output_hash == hash_text("partial result")
+        assert t.event.model == "gpt-4o"
+        assert t.event.risk_score == 10.0
+        assert t.event.policy_decision == PolicyDecision.DENY
+        assert t.event.metadata["error"] == "ValueError"
+        assert t.event.duration_ms >= 0.0
+
+    def test_trace_tool_error_metadata_holds_only_exception_type(self, tracer):
+        with pytest.raises(ValueError, match="sk-secret"):
+            with tracer.trace_tool("search", input_text="q") as t:
+                raise ValueError("sk-secret-token")
+        assert t.event is not None
+        assert t.event.event_type == EventType.ERROR
+        assert t.event.metadata["error"] == "ValueError"
+        assert "sk-secret-token" not in json.dumps(t.event.to_dict())
+
+    def test_trace_tool_docstring_example(self, tracer):
+        # Mirrors the LangGraph example in the AgentTracer docstring.
+        tracer.start_session()
+        query = "AI governance 2026"
+        with tracer.trace_tool("search", input_text=query) as t:
+            result = "search results"
+            t.output_hash = hash_text(result)
+        assert t.event.output_hash == hash_text("search results")
+        path = tracer.end_session()
+        valid, errors = tracer.verify(path)
+        assert valid is True
+        assert errors == []
+
+
 # ── ComplianceReport tests ─────────────────────────
 
 

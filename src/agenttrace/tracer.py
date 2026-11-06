@@ -25,6 +25,90 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+class _ToolTrace:
+    """Context object returned by :meth:`AgentTracer.trace_tool`.
+
+    The object yielded by the ``with`` block is a mutable holder, not the
+    sealed event itself: the event is only recorded (and hash-chained)
+    when the block exits, so values assigned inside the block are part of
+    the recorded event instead of breaking its hash. Set either
+    ``output_text`` (hashed on exit) or ``output_hash`` directly, as in
+    the ``AgentTracer`` class docstring; an explicit ``output_hash`` wins
+    if both are set. After the block exits, ``event`` holds the recorded
+    :class:`~agenttrace.schema.TraceEvent` (or ``None`` if not exited yet).
+    On an exception inside the block an ERROR event is recorded instead
+    of a TOOL_CALL event, with only the exception type noted in its
+    metadata, and the exception propagates.
+    """
+
+    def __init__(
+        self,
+        tracer: AgentTracer,
+        tool: str,
+        input_text: str = "",
+        model: str = "",
+        risk_score: float = 0.0,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._tracer = tracer
+        self.tool = tool
+        self.input_text = input_text
+        self.model = model
+        self.risk_score = risk_score
+        self.metadata = metadata
+        self._kwargs = kwargs
+        self.output_text = ""
+        self.output_hash = ""
+        self.event: TraceEvent | None = None
+        self.duration_ms = 0.0
+        self._start = 0.0
+
+    def __enter__(self) -> _ToolTrace:
+        self._start = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, _tb: Any) -> bool:
+        self.duration_ms = (time.monotonic() - self._start) * 1000.0
+        metadata = dict(self.metadata) if self.metadata else {}
+        if exc_type is not None:
+            # A failed tool call is an ERROR event, not a TOOL_CALL:
+            # issue #6 asks for "tool_call ... or an error event", and
+            # TOOL_CALL is reserved for successful executions. Only the
+            # exception type is persisted (CWE-532): the raw message
+            # may contain credentials or user data.
+            metadata["error"] = exc_type.__name__
+            self.event = self._tracer.record(
+                EventType.ERROR,
+                tool_name=self.tool,
+                action=f"tool_call:{self.tool}",
+                input_text=self.input_text,
+                output_text=self.output_text,
+                output_hash=self.output_hash,
+                model=self.model,
+                risk_score=self.risk_score,
+                duration_ms=self.duration_ms,
+                metadata=metadata,
+                policy_decision=PolicyDecision.DENY,
+                **self._kwargs,
+            )
+            return False
+        self.event = self._tracer.record(
+            EventType.TOOL_CALL,
+            tool_name=self.tool,
+            action=f"tool_call:{self.tool}",
+            input_text=self.input_text,
+            output_text=self.output_text,
+            output_hash=self.output_hash,
+            model=self.model,
+            risk_score=self.risk_score,
+            duration_ms=self.duration_ms,
+            metadata=metadata,
+            **self._kwargs,
+        )
+        return False
+
+
 class AgentTracer:
     """
     Records tamper-evident, hash-chained audit trails for AI agent decisions.
@@ -137,8 +221,14 @@ class AgentTracer:
         human_oversight_required: bool = False,
         duration_ms: float = 0.0,
         metadata: dict[str, Any] | None = None,
+        output_hash: str = "",
     ) -> TraceEvent:
-        """Record a single audit event."""
+        """Record a single audit event.
+
+        An explicit ``output_hash`` (e.g. supplied by ``trace_tool`` from
+        a value the caller already hashed) is used as-is and wins over
+        hashing ``output_text``; otherwise ``output_text`` is hashed.
+        """
         event = TraceEvent(
             session_id=self.session_id,
             agent_id=self.agent_id,
@@ -150,7 +240,8 @@ class AgentTracer:
             tool_name=tool_name,
             model=model,
             input_hash=_hash_text(input_text) if input_text else "",
-            output_hash=_hash_text(output_text) if output_text else "",
+            output_hash=output_hash
+            or (_hash_text(output_text) if output_text else ""),
             context_hash=_hash_text(context_text) if context_text else "",
             policy_decision=policy_decision,
             policy_rules_applied=policy_rules or [],
@@ -182,6 +273,40 @@ class AgentTracer:
             EventType.TOOL_CALL,
             tool_name=tool,
             action=f"tool_call:{tool}",
+            input_text=input_text,
+            model=model,
+            risk_score=risk_score,
+            **kwargs,
+        )
+
+    def trace_tool(
+        self,
+        tool: str,
+        input_text: str = "",
+        model: str = "",
+        risk_score: float = 0.0,
+        **kwargs: Any,
+    ) -> _ToolTrace:
+        """Time a tool call and record it as one TOOL_CALL event on exit,
+        or one ERROR event if the block raises.
+
+        Use as a context manager, as shown in the class docstring::
+
+            with tracer.trace_tool("search", input_text=query) as t:
+                result = search_tool(query)
+                t.output_hash = hash_text(result)
+
+        Inside the block, set ``t.output_text`` (hashed on exit) or
+        ``t.output_hash`` directly. After the block, ``t.event`` is the
+        recorded event and ``t.duration_ms`` is the elapsed time. This
+        does not start or end a session; call ``start_session`` /
+        ``end_session`` around it as usual. An exception inside the block
+        is recorded as an ERROR event (only the exception type is kept
+        in the event's metadata) and then re-raised.
+        """
+        return _ToolTrace(
+            self,
+            tool,
             input_text=input_text,
             model=model,
             risk_score=risk_score,
