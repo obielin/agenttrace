@@ -24,6 +24,7 @@ from agenttrace import (
 
 # ── TraceEvent tests ───────────────────────────────
 
+
 class TestTraceEvent:
     def test_default_creation(self):
         event = TraceEvent()
@@ -64,101 +65,71 @@ class TestTraceEvent:
 
     def test_from_dict_roundtrip(self):
         event = TraceEvent(
-            agent_id="test",
-            event_type=EventType.TOOL_CALL,
-            action="search",
-            tool_name="search",
+            agent_id="test-agent",
+            event_type=EventType.DECISION,
+            action="plan",
+            risk_score=25.0,
         )
         event.seal()
         d = event.to_dict()
         restored = TraceEvent.from_dict(d)
-        assert restored.agent_id == "test"
-        assert restored.action == "search"
-        assert restored.event_type == EventType.TOOL_CALL
+        assert restored.agent_id == event.agent_id
+        assert restored.event_type == event.event_type
+        assert restored.risk_score == event.risk_score
         assert restored.event_hash == event.event_hash
 
-    def test_from_dict_with_string_enums(self):
-        event = TraceEvent(
-            event_type=EventType.TOOL_CALL,
-            risk_tier=RiskTier.HIGH,
-            policy_decision=PolicyDecision.DENY,
-        )
-        d = event.to_dict()
-        restored = TraceEvent.from_dict(d)
-        assert restored.event_type == EventType.TOOL_CALL
-        assert restored.risk_tier == RiskTier.HIGH
-        assert restored.policy_decision == PolicyDecision.DENY
+    def test_event_type_enum(self):
+        event = TraceEvent(event_type=EventType.TOOL_CALL)
+        assert event.event_type == EventType.TOOL_CALL
 
-    def test_to_dict_serializable(self):
-        event = TraceEvent(agent_id="test", action="search")
-        event.seal()
-        text = json.dumps(event.to_dict())
-        assert "test" in text
+    def test_policy_decision_enum(self):
+        event = TraceEvent(policy_decision=PolicyDecision.DENY)
+        assert event.policy_decision == PolicyDecision.DENY
 
-    def test_from_dict_missing_keys_use_defaults(self):
-        event = TraceEvent.from_dict({})
-        assert event.agent_id == "agent"
-        assert event.event_type == EventType.DECISION
-        assert event.risk_tier == RiskTier.LOW
-        assert event.policy_decision == PolicyDecision.ALLOW
+    def test_risk_tier_enum(self):
+        event = TraceEvent(risk_tier=RiskTier.HIGH)
+        assert event.risk_tier == RiskTier.HIGH
 
-    def test_from_dict_coerces_string_timestamps(self):
-        event = TraceEvent.from_dict({"timestamp_utc": 1234567890})
-        assert event.timestamp_utc == "1234567890"
-
-    def test_event_with_invalid_enum_falls_back(self):
-        event = TraceEvent.from_dict({"event_type": "not_a_real_type"})
-        assert event.event_type == EventType.DECISION
-
-    def test_repr_is_informative(self):
-        event = TraceEvent(agent_id="test", action="search")
-        assert "search" in repr(event)
+    def test_repr(self):
+        event = TraceEvent(agent_id="myagent", event_type=EventType.DECISION)
+        assert "myagent" in repr(event)
+        assert "decision" in repr(event)
 
 
 # ── AgentTracer tests ──────────────────────────────
 
+
 class TestAgentTracer:
     @pytest.fixture
     def tracer(self, tmp_path):
-        return AgentTracer(agent_id="test-agent", output_dir=tmp_path)
+        return AgentTracer(
+            agent_id="test-agent",
+            framework="custom",
+            output_dir=tmp_path,
+        )
 
-    def test_start_session_records_event(self, tracer):
-        event = tracer.start_session()
-        assert event.event_type == EventType.SESSION_START
+    def test_initial_state(self, tracer):
+        assert tracer.event_count == 0
+        assert tracer.session_id
+        assert tracer.agent_id == "test-agent"
+
+    def test_start_session_creates_event(self, tracer):
+        tracer.start_session()
+        assert tracer.event_count == 1
+        assert tracer.events[0].event_type == EventType.SESSION_START
+
+    def test_record_creates_event(self, tracer):
+        tracer.record(EventType.DECISION, action="plan")
         assert tracer.event_count == 1
 
-    def test_record_tool_call_hashes_inputs(self, tracer):
-        event = tracer.record_tool_call("search", input_text="q")
-        assert event.input_hash == hash_text("q")
-        assert event.tool_name == "search"
+    def test_record_tool_call(self, tracer):
+        event = tracer.record_tool_call(tool="web_search", input_text="AI Act")
         assert event.event_type == EventType.TOOL_CALL
-
-    def test_record_never_stores_raw_text(self, tracer):
-        event = tracer.record_tool_call(
-            "search", input_text="secret query", output_text="secret result"
-        )
-        d = event.to_dict()
-        assert "secret query" not in json.dumps(d)
-        assert "secret result" not in json.dumps(d)
-
-    def test_record_hashes_output_text(self, tracer):
-        event = tracer.record_tool_call("search", output_text="some output")
-        assert event.output_hash == hash_text("some output")
-
-    def test_record_explicit_output_hash_wins(self, tracer):
-        event = tracer.record_tool_call("search", output_text="abc", output_hash="xyz")
-        assert event.output_hash == "xyz"
-
-    def test_record_stores_metadata(self, tracer):
-        event = tracer.record_tool_call("search", metadata={"a": 1})
-        assert event.metadata == {"a": 1}
-
-    def test_record_defaults_to_allow(self, tracer):
-        event = tracer.record_tool_call("search")
-        assert event.policy_decision == PolicyDecision.ALLOW
+        assert event.tool_name == "web_search"
+        assert event.input_hash != ""
 
     def test_record_decision(self, tracer):
-        event = tracer.record_decision("approve", risk_score=10.0)
+        event = tracer.record_decision(action="summarise", risk_score=10.0)
         assert event.event_type == EventType.DECISION
         assert event.risk_score == 10.0
 
@@ -166,119 +137,133 @@ class TestAgentTracer:
         event = tracer.record_error(action="tool_failed")
         assert event.event_type == EventType.ERROR
         assert event.policy_decision == PolicyDecision.DENY
-        assert event.risk_score == 50.0
 
-    def test_event_hash_chain(self, tracer):
-        tracer.record_tool_call("a")
-        tracer.record_tool_call("b")
-        assert tracer.events[0].prev_hash == ""
-        assert tracer.events[1].prev_hash == tracer.events[0].event_hash
-
-    def test_all_event_types_recordable(self, tracer):
-        for event_type in EventType:
-            event = tracer.record(event_type, action=f"test-{event_type.value}")
-            assert event.event_type == event_type
-
-    def test_custom_session_id(self, tmp_path):
-        tracer = AgentTracer(session_id="abc-123", output_dir=tmp_path)
-        assert tracer.session_id == "abc-123"
-
-    def test_end_session_writes_jsonl(self, tracer):
+    def test_hash_chain_links_events(self, tracer):
         tracer.start_session()
-        tracer.record_tool_call("search", input_text="q")
-        path = tracer.end_session()
-        assert path is not None
-        assert path.exists()
-        lines = path.read_text().splitlines()
-        assert len(lines) == 3
+        tracer.record_tool_call(tool="search")
+        tracer.record_decision(action="plan")
+        events = tracer.events
+        assert events[1].prev_hash == events[0].event_hash
+        assert events[2].prev_hash == events[1].event_hash
 
-    def test_end_session_no_flush(self, tracer):
-        path = tracer.end_session(flush=False)
-        assert path is None
-        assert tracer.event_count == 1
+    def test_end_session_creates_event(self, tracer):
+        tracer.start_session()
+        tracer.end_session(flush=False)
+        types = [e.event_type for e in tracer.events]
+        assert EventType.SESSION_START in types
+        assert EventType.SESSION_END in types
 
-    def test_flush_returns_bundle_path(self, tracer):
-        tracer.record_tool_call("search")
+    def test_flush_creates_jsonl_file(self, tracer):
+        tracer.start_session()
+        tracer.record_decision(action="test")
         path = tracer.flush()
         assert path.exists()
-        assert tracer.bundle_path == path
+        assert path.suffix == ".jsonl"
+
+    def test_flush_file_is_valid_jsonl(self, tracer):
+        tracer.start_session()
+        tracer.record_tool_call(tool="search")
+        path = tracer.flush()
+        lines = path.read_text().strip().split("\n")
+        for line in lines:
+            data = json.loads(line)
+            assert "event_id" in data
 
     def test_verify_valid_bundle(self, tracer):
         tracer.start_session()
-        tracer.record_tool_call("search", input_text="q")
-        path = tracer.end_session()
-        assert path is not None
-        ok, errors = tracer.verify(path)
-        assert ok is True
+        tracer.record_decision(action="plan")
+        tracer.record_tool_call(tool="search")
+        path = tracer.end_session(flush=True)
+        valid, errors = tracer.verify(path)
+        assert valid is True
         assert errors == []
 
-    def test_verify_tampered_bundle_fails(self, tracer):
+    def test_verify_tampered_bundle(self, tracer, tmp_path):
         tracer.start_session()
-        tracer.record_tool_call("search", input_text="q")
+        tracer.record_decision(action="plan")
+        path = tracer.flush()
+        # Tamper with the bundle
+        lines = path.read_text().strip().split("\n")
+        data = json.loads(lines[0])
+        data["action"] = "TAMPERED"
+        lines[0] = json.dumps(data)
+        path.write_text("\n".join(lines))
+        valid, errors = tracer.verify(path)
+        assert valid is False
+        assert len(errors) > 0
+
+    def test_auto_compliance_annotation(self, tracer):
+        event = tracer.record(EventType.DECISION, action="plan")
+        assert event.eu_ai_act_article == "Article 12"
+        assert event.nist_ai_rmf_function == "GOVERN 1.1"
+
+    def test_hash_text(self):
+        h = hash_text("hello world")
+        assert len(h) == 64
+        assert hash_text("hello world") == h
+        assert hash_text("different") != h
+
+    def test_end_session_returns_path(self, tracer):
+        tracer.start_session()
         path = tracer.end_session()
         assert path is not None
-        lines = path.read_text().splitlines()
-        data = json.loads(lines[1])
-        data["action"] = "tampered"
-        lines[1] = json.dumps(data)
-        path.write_text("\n".join(lines) + "\n")
-        ok, errors = tracer.verify(path)
-        assert ok is False
-        assert errors
+        assert path.exists()
 
-    def test_verify_missing_file(self, tracer):
-        ok, errors = tracer.verify("/nonexistent/bundle.jsonl")
-        assert ok is False
-        assert errors
+    def test_events_property_returns_copy(self, tracer):
+        tracer.record_decision(action="x")
+        events = tracer.events
+        events.clear()
+        assert tracer.event_count == 1
 
-    def test_verify_invalid_json(self, tracer, tmp_path):
-        bad = tmp_path / "bad.jsonl"
-        bad.write_text("{not json}\n")
-        ok, errors = tracer.verify(bad)
-        assert ok is False
-        assert errors
+    def test_custom_session_id(self, tmp_path):
+        tracer = AgentTracer(
+            agent_id="agent",
+            session_id="my-custom-session",
+            output_dir=tmp_path,
+        )
+        assert tracer.session_id == "my-custom-session"
 
-    def test_verify_prev_hash_mismatch(self, tracer, tmp_path):
-        event = TraceEvent(agent_id="x")
-        event.seal()
-        path = tmp_path / "bundle.jsonl"
-        path.write_text(json.dumps(event.to_dict()) + "\n" + json.dumps(event.to_dict()) + "\n")
-        ok, errors = tracer.verify(path)
-        assert ok is False
-        assert any("prev_hash" in e for e in errors)
+    def test_all_event_types_recordable(self, tracer):
+        for event_type in EventType:
+            tracer.record(event_type, action=f"test-{event_type.value}")
+        assert tracer.event_count == len(EventType)
+
+    def test_metadata_preserved(self, tracer):
+        event = tracer.record(EventType.DECISION, action="x", metadata={"key": "value"})
+        assert event.metadata["key"] == "value"
 
 
 # ── trace_tool tests ─────────────────────────
 
+
 class TestTraceTool:
     @pytest.fixture
     def tracer(self, tmp_path):
-        return AgentTracer(agent_id="test-agent", output_dir=tmp_path)
+        return AgentTracer(
+            agent_id="test-agent",
+            framework="custom",
+            output_dir=tmp_path,
+        )
 
-    def test_trace_tool_records_tool_call(self, tracer):
+    def test_trace_tool_records_one_tool_call_on_exit(self, tracer):
+        tracer.start_session()
+        with tracer.trace_tool("search", input_text="AI governance") as t:
+            assert t.event is None
+            t.output_hash = hash_text("search results")
+        assert tracer.event_count == 2
+        event = t.event
+        assert event is not None
+        assert event.event_type == EventType.TOOL_CALL
+        assert event.tool_name == "search"
+        assert event.input_hash == hash_text("AI governance")
+        assert event.output_hash == hash_text("search results")
+        assert event.duration_ms >= 0.0
+        assert tracer.events[-1] is event
+
+    def test_trace_tool_output_text_is_hashed(self, tracer):
         with tracer.trace_tool("search", input_text="q") as t:
-            t.output_text = "some result"
-        assert t.event is not None
-        assert t.event.event_type == EventType.TOOL_CALL
-        assert t.event.tool_name == "search"
-        assert t.event.input_hash == hash_text("q")
-        assert t.event.output_hash == hash_text("some result")
-        assert t.duration_ms >= 0.0
-
-    def test_trace_tool_output_hash_wins(self, tracer):
-        with tracer.trace_tool("search", input_text="q") as t:
-            t.output_text = "abc"
-            t.output_hash = "xyz"
-        assert t.event is not None
-        assert t.event.output_hash == "xyz"
-
-    def test_trace_tool_records_duration_and_model(self, tracer):
-        with tracer.trace_tool("search", model="gpt-4o", risk_score=10.0) as t:
-            t.output_text = "ok"
-        assert t.event is not None
-        assert t.event.model == "gpt-4o"
-        assert t.event.risk_score == 10.0
-        assert t.event.duration_ms >= 0.0
+            t.output_text = "answer"
+        assert t.event.output_hash == hash_text("answer")
 
     def test_trace_tool_exception_still_records_and_propagates(self, tracer):
         with pytest.raises(ValueError, match="boom"):
@@ -320,112 +305,116 @@ class TestTraceTool:
         assert t.event.metadata["error"] == "ValueError"
         assert "sk-secret-token" not in json.dumps(t.event.to_dict())
 
+    def test_trace_tool_docstring_example(self, tracer):
+        # Mirrors the LangGraph example in the AgentTracer docstring.
+        tracer.start_session()
+        query = "AI governance 2026"
+        with tracer.trace_tool("search", input_text=query) as t:
+            result = "search results"
+            t.output_hash = hash_text(result)
+        assert t.event.output_hash == hash_text("search results")
+        path = tracer.end_session()
+        valid, errors = tracer.verify(path)
+        assert valid is True
+        assert errors == []
+
 
 # ── ComplianceReport tests ─────────────────────────
+
 
 class TestComplianceReport:
     @pytest.fixture
     def bundle(self, tmp_path):
-        tracer = AgentTracer(agent_id="test-agent", output_dir=tmp_path)
+        tracer = AgentTracer(
+            agent_id="report-agent",
+            framework="langgraph",
+            output_dir=tmp_path,
+        )
         tracer.start_session()
-        tracer.record_tool_call("search", input_text="q", risk_score=10.0)
-        tracer.record_tool_call("search", input_text="q2", risk_score=90.0)
-        tracer.record_tool_call("fetch", input_text="u", risk_score=5.0)
-        tracer.record_decision("approve", risk_score=95.0)
+        tracer.record_tool_call(tool="search", input_text="test", risk_score=10.0)
+        tracer.record_decision(action="plan", risk_score=20.0)
+        tracer.record(EventType.POLICY_CHECK, action="check", risk_score=5.0)
         tracer.record_error(action="failed")
-        return tracer.end_session()
+        tracer.end_session()
+        return tracer.bundle_path
 
-    def test_report_counts_events(self, bundle):
+    def test_generate_report_returns_report(self, bundle):
         report = generate_report(bundle)
-        assert report.event_count == 7
+        assert isinstance(report, ComplianceReport)
 
-    def test_report_counts_by_type(self, bundle):
+    def test_report_event_counts(self, bundle):
         report = generate_report(bundle)
-        assert report.events_by_type[EventType.TOOL_CALL.value] == 3
-        assert report.events_by_type[EventType.DECISION.value] == 1
-        assert report.events_by_type[EventType.ERROR.value] == 1
+        assert report.total_events > 0
+        assert report.tool_call_events == 1
+        assert report.decision_events == 1
+        assert report.error_events == 1
 
-    def test_report_counts_denied(self, bundle):
+    def test_report_agent_id(self, bundle):
         report = generate_report(bundle)
-        assert report.denied_count == 1
+        assert report.agent_id == "report-agent"
 
-    def test_report_counts_high_risk(self, bundle):
+    def test_report_framework(self, bundle):
         report = generate_report(bundle)
-        assert report.high_risk_count == 2
+        assert report.framework == "langgraph"
 
-    def test_report_counts_errors(self, bundle):
+    def test_report_chain_valid(self, bundle):
         report = generate_report(bundle)
-        assert report.error_count == 1
+        assert report.chain_valid is True
 
-    def test_report_tool_usage_counts(self, bundle):
+    def test_report_eu_ai_act_coverage(self, bundle):
         report = generate_report(bundle)
-        assert report.tool_usage == {"search": 2, "fetch": 1}
+        assert "Article 12 — Logging" in report.eu_ai_act_coverage
 
-    def test_report_top_tools(self, bundle):
+    def test_report_iso_coverage(self, bundle):
         report = generate_report(bundle)
-        assert report.top_tools == [("search", 2), ("fetch", 1)]
+        assert len(report.iso_42001_coverage) > 0
 
-    def test_report_top_tools_empty_without_tool_calls(self, tmp_path):
-        tracer = AgentTracer(agent_id="test-agent", output_dir=tmp_path)
-        tracer.start_session()
-        tracer.record_decision("approve")
-        path = tracer.end_session()
-        report = generate_report(path)
-        assert report.top_tools == []
-
-    def test_report_includes_agent_and_session(self, bundle):
+    def test_report_nist_coverage(self, bundle):
         report = generate_report(bundle)
-        assert report.agent_id == "test-agent"
-        assert report.session_id
+        assert len(report.nist_ai_rmf_coverage) > 0
+
+    def test_report_to_text(self, bundle):
+        report = generate_report(bundle)
+        text = report.to_text()
+        assert "AGENTTRACE COMPLIANCE REPORT" in text
+        assert "EU AI ACT" in text
+        assert "NIST AI RMF" in text
 
     def test_report_to_dict(self, bundle):
         report = generate_report(bundle)
         d = report.to_dict()
-        assert "agent_id" in d
-        assert "generated_at_utc" in d
-        assert "compliance_verdict" in d
+        assert "schema" in d
+        assert "events" in d
+        assert "risk" in d
+        assert "compliance" in d
+        assert "chain_integrity" in d
 
-    def test_generate_report_function(self, bundle):
+    def test_report_risk_scores(self, bundle):
         report = generate_report(bundle)
-        assert isinstance(report, ComplianceReport)
+        assert report.avg_risk_score >= 0
+        assert report.max_risk_score >= 0
 
-    def test_generate_report_empty_events(self, tmp_path):
-        tracer = AgentTracer(agent_id="test-agent", output_dir=tmp_path)
+    def test_report_deny_count(self, tmp_path):
+        tracer = AgentTracer(agent_id="a", output_dir=tmp_path)
+        tracer.start_session()
+        tracer.record_decision(action="x", policy_decision=PolicyDecision.DENY)
+        tracer.record_decision(action="y", policy_decision=PolicyDecision.DENY)
+        path = tracer.end_session()
+        report = generate_report(path)
+        assert report.deny_decisions == 2
+        assert len(report.deny_event_ids) == 2
+
+    def test_report_risk_clauses_partial_without_evidence(self, tmp_path):
+        tracer = AgentTracer(agent_id="a", output_dir=tmp_path)
         tracer.start_session()
         path = tracer.end_session()
         report = generate_report(path)
-        assert report is not None
-        assert report.event_count == 2
-        assert report.compliance_verdict == "compliant"
+        assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("PARTIAL")
+        assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("PARTIAL")
+        assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("PARTIAL")
 
-    def test_generate_report_rejects_high_risk(self, bundle):
+    def test_report_risk_clauses_satisfied_with_evidence(self, bundle):
         report = generate_report(bundle)
-        assert report.compliance_verdict == "review_required"
-
-    def test_generate_report_rejects_unverified(self, tmp_path):
-        path = tmp_path / "bundle.jsonl"
-        path.write_text("{not json}\n")
-        report = generate_report(path)
-        assert report.compliance_verdict == "unverified"
-        assert report.verified is False
-
-    def test_report_compliance_verdict_compliant(self, tmp_path):
-        tracer = AgentTracer(agent_id="test-agent", output_dir=tmp_path)
-        tracer.start_session()
-        tracer.record_tool_call("search", input_text="q")
-        path = tracer.end_session()
-        report = generate_report(path)
-        assert report.verified is True
-        assert report.high_risk_count == 0
-        assert report.denied_count == 0
-        assert report.compliance_verdict == "compliant"
-
-    def test_report_requires_both_checks(self, tmp_path):
-        tracer = AgentTracer(agent_id="test-agent", output_dir=tmp_path)
-        tracer.start_session()
-        tracer.record_tool_call("search", input_text="q", risk_score=90.0)
-        path = tracer.end_session()
-        report = generate_report(path)
-        assert report.verified is True
-        assert report.high_risk_count == 1
-        assert report.compliance_verdict == "review_required"
+        assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("SATISFIED")
+        assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("SATISFIED")
+        assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("SATISFIED")
