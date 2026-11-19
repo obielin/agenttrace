@@ -264,3 +264,6 @@ The schema is designed as a citable artefact for the research community. If you 
 ---
 
 **Linda Oraegbunam** | [LinkedIn](https://www.linkedin.com/in/linda-oraegbunam/) | [Twitter](https://twitter.com/Obie_Linda) | [GitHub](https://github.com/obielin)
+
+Repeated `tracer.flush()` calls append only new events to one session bundle.
+`end_session()` finishes that same file, and `tracer.bundle_path` stays stable.

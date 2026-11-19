@@ -332,3 +332,28 @@ class TestComplianceReport:
         assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("SATISFIED")
         assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("SATISFIED")
         assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("SATISFIED")
+
+
+def test_repeated_flushes_append_to_one_bundle(tmp_path, monkeypatch):
+    import itertools
+
+    import agenttrace.tracer as tracer_module
+
+    clock = itertools.count(1000, 1000)
+    monkeypatch.setattr(tracer_module.time, "time", lambda: next(clock))
+    tracer = AgentTracer(output_dir=tmp_path)
+    tracer.start_session()
+    tracer.record_tool_call(tool="first")
+    first_path = tracer.flush()
+    prefix = first_path.read_bytes()
+    assert tracer.flush() == first_path
+    assert first_path.read_bytes() == prefix
+    tracer.record_tool_call(tool="second")
+    final_path = tracer.end_session()
+    assert final_path == first_path
+    assert list(tmp_path.glob("*.jsonl")) == [first_path]
+    assert first_path.read_bytes().startswith(prefix)
+    records = [json.loads(line) for line in first_path.read_text().splitlines()]
+    assert len(records) == 4
+    assert len({event["event_id"] for event in records}) == 4
+    assert tracer.verify(first_path) == (True, [])

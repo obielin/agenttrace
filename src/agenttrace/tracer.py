@@ -82,6 +82,7 @@ class AgentTracer:
         self._prev_hash = ""
         self._session_active = False
         self._bundle_path: pathlib.Path | None = None
+        self._flushed_count = 0
 
     @property
     def bundle_path(self) -> pathlib.Path | None:
@@ -215,15 +216,16 @@ class AgentTracer:
         )
 
     def flush(self) -> pathlib.Path:
-        """Write all events to a JSONL bundle file."""
+        """Append unwritten events to the session's single JSONL bundle."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"agenttrace_{self.session_id[:8]}_{int(time.time())}.jsonl"
-        path = self.output_dir / filename
-        with path.open("w", encoding="utf-8") as f:
-            for event in self._events:
+        if self._bundle_path is None:
+            filename = f"agenttrace_{self.session_id[:8]}_{int(time.time())}.jsonl"
+            self._bundle_path = self.output_dir / filename
+        with self._bundle_path.open("a", encoding="utf-8") as f:
+            for event in self._events[self._flushed_count :]:
                 f.write(json.dumps(event.to_dict()) + "\n")
-        self._bundle_path = path
-        return path
+        self._flushed_count = len(self._events)
+        return self._bundle_path
 
     def verify(self, path: pathlib.Path | None = None) -> tuple[bool, list[str]]:
         """
