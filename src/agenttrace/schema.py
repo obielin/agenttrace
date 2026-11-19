@@ -134,6 +134,8 @@ class TraceEvent:
             "risk_score": self.risk_score,
             "prev_hash": self.prev_hash,
         }
+        if self.event_type == EventType.SESSION_END and "event_count" in self.metadata:
+            payload["event_count"] = self.metadata["event_count"]
         serialised = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
 

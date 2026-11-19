@@ -332,3 +332,42 @@ class TestComplianceReport:
         assert report.eu_ai_act_coverage["Article 9 — Risk management"].startswith("SATISFIED")
         assert report.iso_42001_coverage["Clause 6.1 — Risk actions"].startswith("SATISFIED")
         assert report.nist_ai_rmf_coverage["MANAGE 2.2 — Incidents"].startswith("SATISFIED")
+
+
+@pytest.mark.parametrize("mutation", ["empty", "truncate", "missing_start", "wrong_count"])
+def test_verify_rejects_incomplete_session(tmp_path, mutation):
+    tracer = AgentTracer(output_dir=tmp_path)
+    tracer.start_session()
+    tracer.record_tool_call(tool="search")
+    path = tracer.end_session()
+    lines = path.read_text().splitlines()
+    if mutation == "empty":
+        lines = []
+    elif mutation == "truncate":
+        lines = lines[:-1]
+    elif mutation == "missing_start":
+        lines = lines[1:]
+    else:
+        # A hash-consistent bundle must still have a truthful final count.
+        event = TraceEvent.from_dict(json.loads(lines[-1]))
+        event.metadata["event_count"] = 999
+        event.event_hash = event.compute_hash()
+        lines[-1] = json.dumps(event.to_dict())
+    path.write_text("\n".join(lines) + "\n")
+    valid, errors = tracer.verify(path)
+    assert not valid
+    assert errors
+
+
+def test_session_end_records_the_count_without_mutating_metadata(tmp_path):
+    tracer = AgentTracer(output_dir=tmp_path)
+    metadata = {"reason": "finished"}
+    tracer.start_session()
+    tracer.record_tool_call(tool="search")
+    path = tracer.end_session(metadata=metadata)
+    assert metadata == {"reason": "finished"}
+    assert tracer.events[-1].metadata["event_count"] == 3
+    assert tracer.verify(path) == (True, [])
+    final = tracer.events[-1]
+    final.metadata["event_count"] = 4
+    assert final.compute_hash() != final.event_hash

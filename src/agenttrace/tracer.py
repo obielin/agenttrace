@@ -114,7 +114,7 @@ class AgentTracer:
         self.record(
             EventType.SESSION_END,
             action="session_ended",
-            metadata=metadata or {},
+            metadata={**(metadata or {}), "event_count": len(self._events) + 1},
         )
         self._session_active = False
         if flush:
@@ -255,6 +255,15 @@ class AgentTracer:
                 except Exception as e:
                     errors.append(f"Line {i+1}: parse error — {e}")
                     continue
+
+        if not events:
+            return False, errors + ["Bundle is empty"]
+        if events[0].event_type != EventType.SESSION_START:
+            errors.append("Bundle must begin with session_start")
+        if events[-1].event_type != EventType.SESSION_END:
+            errors.append("Bundle must end with session_end")
+        elif events[-1].metadata.get("event_count") != len(events):
+            errors.append("Session event_count does not match the bundle length")
 
         for i, event in enumerate(events):
             # Check prev_hash chain

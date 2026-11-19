@@ -186,3 +186,12 @@ GitHub. https://github.com/obielin/agenttrace
 
 *Schema maintained by Linda Oraegbunam.*
 *Research focus: Agentic AI Governance.*
+
+## Complete sessions
+
+A verified bundle starts with `session_start` and ends with `session_end`. The
+final event includes `metadata.event_count`, counting every event including itself;
+this count is covered by its hash. Empty and incomplete bundles fail verification.
+Older bundles without the final count also fail this completeness check. This detects
+truncation, but an unkeyed hash chain does not authenticate a bundle against a writer
+who can rewrite all its events and hashes.
